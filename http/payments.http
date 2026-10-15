@@ -1,0 +1,370 @@
+# PayFlow API tests. Select the 'dev' environment, then run the requests top to bottom.
+# Expected status is in each title.
+
+##### 1. CREATE: success #####
+
+### 1.1 Create payment -> 201, status PENDING (saves paymentId)
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{
+  "amount": 100.50,
+  "currency": "INR",
+  "reference": "INV-1001"
+}
+
+> {%
+    client.global.set("paymentId", response.body.id);
+%}
+
+### 1.2 Create second payment -> 201 (saves paymentId2)
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{
+  "amount": 25,
+  "currency": "USD",
+  "reference": "INV-1002"
+}
+
+> {%
+    client.global.set("paymentId2", response.body.id);
+%}
+
+### 1.3 Client-supplied status is ignored -> 201, status still PENDING
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{
+  "amount": 10,
+  "currency": "EUR",
+  "reference": "INV-1003",
+  "status": "SUCCEEDED"
+}
+
+##### 2. CREATE: validation errors #####
+
+### 2.1 Negative amount -> 400, fieldErrors.amount
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ "amount": -5, "currency": "INR", "reference": "X" }
+
+### 2.2 Zero amount -> 400
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ "amount": 0, "currency": "INR", "reference": "X" }
+
+### 2.3 Missing amount -> 400
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ "currency": "INR", "reference": "X" }
+
+### 2.4 Currency too short -> 400, fieldErrors.currency
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ "amount": 10, "currency": "IN", "reference": "X" }
+
+### 2.5 Currency too long -> 400
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ "amount": 10, "currency": "INRR", "reference": "X" }
+
+### 2.6 Missing currency -> 400
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ "amount": 10, "reference": "X" }
+
+### 2.7 Blank reference -> 400, fieldErrors.reference
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ "amount": 10, "currency": "INR", "reference": "   " }
+
+### 2.8 Missing reference -> 400
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ "amount": 10, "currency": "INR" }
+
+### 2.9 Reference over 100 chars -> 400
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ "amount": 10, "currency": "INR", "reference": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+
+### 2.10 Everything wrong at once -> 400, three fieldErrors
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ "amount": -1, "currency": "IN", "reference": "" }
+
+### 2.11 Empty object -> 400, three fieldErrors
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ }
+
+### 2.12 Amount is not a number -> 400 Malformed JSON
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ "amount": "abc", "currency": "INR", "reference": "X" }
+
+### 2.13 Broken JSON -> 400 Malformed JSON
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+
+{ "amount": 
+
+##### 3. READ #####
+
+### 3.1 Get by id -> 200
+GET {{baseUrl}}/api/v1/payments/{{paymentId}}
+
+### 3.2 Unknown id -> 404
+GET {{baseUrl}}/api/v1/payments/00000000-0000-0000-0000-000000000000
+
+### 3.3 Malformed id -> 400
+# KNOWN GAP: returns Spring's default error body (with a stack trace in dev), not PayFlow's ErrorResponse.
+GET {{baseUrl}}/api/v1/payments/not-a-uuid
+
+### 3.4 List, defaults -> 200
+GET {{baseUrl}}/api/v1/payments
+
+### 3.5 List, page 0 size 2, newest first -> 200
+GET {{baseUrl}}/api/v1/payments?page=0&size=2&sort=createdAt,desc
+
+### 3.6 List, second page -> 200
+GET {{baseUrl}}/api/v1/payments?page=1&size=2&sort=createdAt,desc
+
+### 3.7 List, page beyond the end -> 200 with empty content
+GET {{baseUrl}}/api/v1/payments?page=99&size=10
+
+##### 4. IDEMPOTENCY #####
+
+### 4.1 First request with key -> 201 (saves idemPaymentId)
+# Re-running this file later is fine: the key is remembered and returns the same payment.
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+Idempotency-Key: demo-key-1
+
+{
+  "amount": 100.50,
+  "currency": "INR",
+  "reference": "IDEM-1"
+}
+
+> {%
+    client.global.set("idemPaymentId", response.body.id);
+%}
+
+### 4.2 Replay, identical payload -> 201, SAME id as 4.1
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+Idempotency-Key: demo-key-1
+
+{
+  "amount": 100.50,
+  "currency": "INR",
+  "reference": "IDEM-1"
+}
+
+### 4.3 Replay, 100.5 instead of 100.50 -> 201, SAME id (equivalent payload)
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+Idempotency-Key: demo-key-1
+
+{
+  "amount": 100.5,
+  "currency": "INR",
+  "reference": "IDEM-1"
+}
+
+### 4.4 Same key, different amount -> 409
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+Idempotency-Key: demo-key-1
+
+{
+  "amount": 999,
+  "currency": "INR",
+  "reference": "IDEM-1"
+}
+
+### 4.5 Same key, different reference -> 409
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+Idempotency-Key: demo-key-1
+
+{
+  "amount": 100.50,
+  "currency": "INR",
+  "reference": "OTHER"
+}
+
+### 4.6 New key, same payload -> 201, NEW id
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+Idempotency-Key: demo-key-2
+
+{
+  "amount": 100.50,
+  "currency": "INR",
+  "reference": "IDEM-1"
+}
+
+### 4.7 Key over 255 chars -> 400
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+Idempotency-Key: kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
+
+{
+  "amount": 100.50,
+  "currency": "INR",
+  "reference": "IDEM-1"
+}
+
+### 4.8 Invalid body with a key -> 400, and the key is not consumed
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+Idempotency-Key: demo-key-3
+
+{ "amount": -1, "currency": "IN", "reference": "" }
+
+### 4.9 Same key as 4.8, now valid -> 201
+POST {{baseUrl}}/api/v1/payments
+Content-Type: application/json
+Idempotency-Key: demo-key-3
+
+{
+  "amount": 100.50,
+  "currency": "INR",
+  "reference": "IDEM-1"
+}
+
+##### 5. STATE MACHINE: PENDING -> PROCESSING -> SUCCEEDED / FAILED #####
+
+# Happy path on paymentId
+
+### 5.1 PENDING -> SUCCEEDED (skips a step) -> 409
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ "status": "SUCCEEDED" }
+
+### 5.2 PENDING -> FAILED -> 409
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ "status": "FAILED" }
+
+### 5.3 PENDING -> PENDING -> 409
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ "status": "PENDING" }
+
+### 5.4 PENDING -> PROCESSING -> 200
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ "status": "PROCESSING" }
+
+### 5.5 PROCESSING -> PROCESSING -> 409
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ "status": "PROCESSING" }
+
+### 5.6 PROCESSING -> PENDING (backwards) -> 409
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ "status": "PENDING" }
+
+### 5.7 PROCESSING -> SUCCEEDED -> 200
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ "status": "SUCCEEDED" }
+
+### 5.8 SUCCEEDED -> FAILED (terminal) -> 409
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ "status": "FAILED" }
+
+### 5.9 SUCCEEDED -> PROCESSING (terminal) -> 409
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ "status": "PROCESSING" }
+
+# Failure path on paymentId2
+
+### 5.10 PENDING -> PROCESSING -> 200
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId2}}/status
+Content-Type: application/json
+
+{ "status": "PROCESSING" }
+
+### 5.11 PROCESSING -> FAILED -> 200
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId2}}/status
+Content-Type: application/json
+
+{ "status": "FAILED" }
+
+### 5.12 FAILED -> SUCCEEDED (terminal) -> 409
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId2}}/status
+Content-Type: application/json
+
+{ "status": "SUCCEEDED" }
+
+# Bad input
+
+### 5.13 Unknown status value -> 400 Malformed JSON
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ "status": "REFUNDED" }
+
+### 5.14 Lowercase status -> 400 Malformed JSON (enum is case-sensitive)
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ "status": "processing" }
+
+### 5.15 Missing status -> 400, fieldErrors.status
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ }
+
+### 5.16 Null status -> 400
+PATCH {{baseUrl}}/api/v1/payments/{{paymentId}}/status
+Content-Type: application/json
+
+{ "status": null }
+
+### 5.17 Unknown payment -> 404
+PATCH {{baseUrl}}/api/v1/payments/00000000-0000-0000-0000-000000000000/status
+Content-Type: application/json
+
+{ "status": "PROCESSING" }
+
+##### 6. VERIFY FINAL STATE #####
+
+### 6.1 paymentId is SUCCEEDED, updatedAt later than createdAt -> 200
+GET {{baseUrl}}/api/v1/payments/{{paymentId}}
+
+### 6.2 paymentId2 is FAILED -> 200
+GET {{baseUrl}}/api/v1/payments/{{paymentId2}}
+
+### 6.3 Idempotent payment is still PENDING -> 200
+GET {{baseUrl}}/api/v1/payments/{{idemPaymentId}}
