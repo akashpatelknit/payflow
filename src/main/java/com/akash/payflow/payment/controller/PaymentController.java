@@ -33,14 +33,14 @@ public class PaymentController {
 	public PaymentResponse createPayment(
 			@RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
 			@Valid @RequestBody CreatePaymentRequest request) {
-		System.out.println(idempotencyKey);
+
 		return paymentService.createPayment(request, idempotencyKey);
 	}
 
 	@PatchMapping("/{id}/status")
 	public PaymentResponse updatePaymentStatus(@PathVariable UUID id,
 			@Valid @RequestBody UpdatePaymentStatusRequest request) {
-		return paymentService.transitionPayment(id, request.status());
+		return paymentService.transitionPayment(id, request.status(), request.failureReason());
 	}
 
 	@GetMapping("/{id}")

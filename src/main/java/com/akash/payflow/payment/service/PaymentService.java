@@ -3,9 +3,11 @@ package com.akash.payflow.payment.service;
 import com.akash.payflow.payment.dto.CreatePaymentRequest;
 import com.akash.payflow.payment.dto.PaymentResponse;
 import com.akash.payflow.payment.entity.IdempotencyRecord;
+import com.akash.payflow.payment.entity.PaymentAttemptStatus;
 import com.akash.payflow.payment.entity.Payment;
 import com.akash.payflow.payment.entity.PaymentStatus;
 import com.akash.payflow.payment.exception.IdempotencyKeyConflictException;
+import com.akash.payflow.payment.exception.InvalidFailureReasonException;
 import com.akash.payflow.payment.exception.InvalidIdempotencyKeyException;
 import com.akash.payflow.payment.exception.PaymentNotFoundException;
 import com.akash.payflow.payment.mapper.PaymentMapper;
@@ -35,6 +37,8 @@ public class PaymentService {
 	private final PaymentRepository paymentRepository;
 	private final IdempotencyRecordRepository idempotencyRecordRepository;
 	private final PaymentMapper paymentMapper;
+	private final PaymentEventService paymentEventService;
+	private final PaymentAttemptService paymentAttemptService;
 	private final TransactionTemplate transactionTemplate;
 
 	/**
@@ -60,11 +64,25 @@ public class PaymentService {
 	}
 
 	@Transactional
-	public PaymentResponse transitionPayment(UUID id, PaymentStatus targetStatus) {
+	public PaymentResponse transitionPayment(UUID id, PaymentStatus targetStatus, String failureReason) {
+		if (failureReason != null && targetStatus != PaymentStatus.FAILED) {
+			throw new InvalidFailureReasonException();
+		}
 		// Row lock: concurrent transitions on the same payment run one after another
 		Payment payment = paymentRepository.findByIdForUpdate(id)
 				.orElseThrow(() -> new PaymentNotFoundException(id));
+		PaymentStatus previousStatus = payment.getStatus();
 		payment.transitionTo(targetStatus);
+
+		// Attempt and event are written in this same transaction as the status change
+		switch (targetStatus) {
+			case PROCESSING -> paymentAttemptService.start(payment);
+			case SUCCEEDED -> paymentAttemptService.complete(payment, PaymentAttemptStatus.SUCCEEDED, null);
+			case FAILED -> paymentAttemptService.complete(payment, PaymentAttemptStatus.FAILED, failureReason);
+			case PENDING -> { /* unreachable: no transition leads back to PENDING */ }
+		}
+		paymentEventService.recordStatusChanged(payment, previousStatus, failureReason);
+
 		// Flush so updatedAt (set in @PreUpdate) is populated before building the response
 		return paymentMapper.toResponse(paymentRepository.saveAndFlush(payment));
 	}
@@ -88,6 +106,7 @@ public class PaymentService {
 		}
 
 		Payment payment = paymentRepository.save(paymentMapper.toEntity(request));
+		paymentEventService.recordCreated(payment);
 		// Flush so a unique-key violation surfaces here, rolling back the payment insert too.
 		idempotencyRecordRepository.saveAndFlush(IdempotencyRecord.builder()
 				.idempotencyKey(idempotencyKey)
@@ -107,7 +126,9 @@ public class PaymentService {
 	}
 
 	private PaymentResponse createNewPayment(CreatePaymentRequest request) {
-		return paymentMapper.toResponse(paymentRepository.save(paymentMapper.toEntity(request)));
+		Payment payment = paymentRepository.save(paymentMapper.toEntity(request));
+		paymentEventService.recordCreated(payment);
+		return paymentMapper.toResponse(payment);
 	}
 
 	private void validateIdempotencyKey(String idempotencyKey) {
